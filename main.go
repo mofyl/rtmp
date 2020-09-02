@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 )
@@ -21,13 +22,22 @@ func main(){
 			continue
 		}
 		fmt.Println("Success")
-		err = handshake(conn)
+		nc := bufio.NewReadWriter(bufio.NewReader(conn) , bufio.NewWriter(conn))
+		err = handshake(nc)
 
 		if err != nil {
-			fmt.Println("err is " , err.Error())
+			fmt.Println("handshake err is " , err.Error())
 			conn.Close()
 			break
 		}
+
+		// 开始读Chunk
+		if err := processStream(nc) ; err != nil {
+			fmt.Println("processStream err is " , err)
+			conn.Close()
+			break
+		}
+
 	}
 
 	l.Close()

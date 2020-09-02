@@ -1,33 +1,36 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand"
-	"net"
 )
 
 const (
 	STMP_HANDSHAK_VERSION = 0x3 // 服务器默认支持 版本号为3的协议
-	C0C1_LEN = 1+1536
+	HANDSHAK_DATA_LEN = 1536
 
-	C1_LEN = 1536
+	C0C1_LEN = 1+HANDSHAK_DATA_LEN
+
 	C1S1_TIME_SIZE = 4
 	C1S1_VERSION_SIZE = 4
 
 	C1S1_DIGEST_SIZE = 764
-	C1S1_DIGEST_OFFSET_MAX = 764 - 32 - 4
 	C1S1_DIGEST_DATA_SIZE = 32
 	C1S1_DIGEST_OFFSET_SIZE = 4
+	C1S1_DIGEST_OFFSET_MAX = 764 - C1S1_DIGEST_DATA_SIZE - C1S1_DIGEST_OFFSET_SIZE
 
 
 	C1S1_KEY_SIZE = 764
-	C1S1_KEY_OFFSET_MAX = 764-28-4
 	C1S1_KEY_OFFSET_SIZE = 4
 	C1S1_KEY_DATA_SIZE = 128
+	C1S1_KEY_OFFSET_MAX = 764-C1S1_KEY_DATA_SIZE-C1S1_KEY_OFFSET_SIZE
 )
 
 
@@ -57,19 +60,14 @@ var (
 )
 
 
-func handshake(conn net.Conn) error{
+func handshake(conn *bufio.ReadWriter) error{
 	// 首先读取C0C1 ；一般会将C0C1放到一起发送
-	c0c1 := make([]byte , C0C1_LEN) // C0 1个字节 C1 1537个字节
-
-	n , err := conn.Read(c0c1)
+	c0c1 ,err := ReadByteToBuf(conn , C0C1_LEN)
+	//c0c1 := make([]byte , C0C1_LEN) // C0 1个字节 C1 1537个字节
+	//n , err := conn.Read(c0c1)
 
 	if err != nil {
 		return err
-	}
-	fmt.Println(c0c1)
-	if n != C0C1_LEN{
-		fmt.Println("Read C0C1 Len Fail n is " , n)
-		return errors.New("Read C0C1 Len Fail")
 	}
 
 	if c0c1[0] != STMP_HANDSHAK_VERSION{
@@ -77,11 +75,11 @@ func handshake(conn net.Conn) error{
 		return errors.New("The Client Version is not support ")
 	}
 	// 判断C1
-	if len(c0c1[1:]) != C1_LEN{
+	if len(c0c1[1:]) != HANDSHAK_DATA_LEN{
 		return errors.New("S1 illegal")
 	}
 	// 获取c1
-	c1 := make([]byte , C1_LEN)
+	c1 := make([]byte , HANDSHAK_DATA_LEN)
 	copy(c1 , c0c1[1:])
 	/*
 	C1构成(左闭右闭)： 0~3为时间戳  4字节
@@ -89,21 +87,42 @@ func handshake(conn net.Conn) error{
 							否则为  complex_handshake
 					剩下的1528字节为 随机数据
 	*/
-	fmt.Println(c1[4])
-	// 这里 & 0xff 主要是为了防止c1[4] 太大
+	// 这里 & 0xff 主要是为了防止c1[4] 太大 超过1byte，&0xff就可以将未超过的部分保留下来,超过的部分截断为0
 	if c1[4] & 0xff == 0 {
 		return simpleHandshake(conn , c1)
 	}
 	return complexHandshake(conn , c1)
+}
+
+func simpleHandshake(conn *bufio.ReadWriter , c1 []byte) error {
+	/*
+
+	s1 共占 1536byte
+		前四个字节为时间 可以直接给0
+	*/
+	s1 := make([]byte , HANDSHAK_DATA_LEN-4)
+	s2 := c1
+	buf := &bytes.Buffer{}
+
+	buf.WriteByte(STMP_HANDSHAK_VERSION)
+	err := binary.Write(buf , binary.BigEndian , uint32(0))
+	if err != nil {
+		return err
+	}
+	buf.Write(s1)
+	buf.Write(s2)
+
+	_ , err = conn.Write(buf.Bytes())
+	if err != nil {
+		return err
+	}
+	conn.Flush()
+	// 跳过C2
+	ReadByteToBuf(conn , HANDSHAK_DATA_LEN)
 	return nil
 }
 
-func simpleHandshake(conn net.Conn , c1 []byte) error {
-	fmt.Println("simpleHandshake")
-	return nil
-}
-
-func complexHandshake(conn net.Conn , c1 []byte) error {
+func complexHandshake(conn  *bufio.ReadWriter, c1 []byte) error {
 	// 校验本次C1是否合法
 	_ , digestData , ok , err := validateClient(c1)
 
@@ -158,11 +177,12 @@ func complexHandshake(conn net.Conn , c1 []byte) error {
 	totalBuf.Write(s2Digest)
 
 	_ , err = conn.Write(totalBuf.Bytes())
-
 	if err != nil {
 		return err
 	}
-
+	conn.Flush()
+	// 跳过C2
+	ReadByteToBuf(conn , HANDSHAK_DATA_LEN)
 	fmt.Println("complexHandshake Finish")
 	return nil
 }
@@ -175,7 +195,7 @@ func createS1() []byte{
 	//binary.BigEndian.PutUint64(s1Version , STMP_HANDSHAK_VERSION)
 	s1Time := []byte{0,0,0,0}
 	s1Version := []byte{1 , 1 , 1 , 1}
-	digestLen :=  C1_LEN - C1S1_TIME_SIZE - C1S1_VERSION_SIZE
+	digestLen :=  HANDSHAK_DATA_LEN - C1S1_TIME_SIZE - C1S1_VERSION_SIZE
 	s1KeyDigest := make([]byte , digestLen)
 
 	for i := 0 ; i < digestLen ; i++{
@@ -193,7 +213,7 @@ func createS1() []byte{
 }
 
 func createS2() []byte{
-	s2Random := make([]byte , C1_LEN - C1S1_DIGEST_DATA_SIZE)
+	s2Random := make([]byte , HANDSHAK_DATA_LEN - C1S1_DIGEST_DATA_SIZE)
 
 	for i:= 0 ; i < len(s2Random) ; i++{
 		s2Random[i] = byte(rand.Int() % 256)
@@ -262,7 +282,7 @@ func getDigestDataOffset(c1[]byte) int{
 		所以  0 <= offset <= 728 (764-4-32)
 		若 offset=3 那么 digest[7(4+3)~39(32+7)] (这里是左闭右开) 为digest-data , 若 offset=728 那么digest[732~764] 为digest-data
 	*/
-	// 这里 &0xff 主要是为了方式 offset 太大
+	// 这里 &0xff 主要是为了防止 c1[8]等太大，超过1byte，未超过的部分会保留下来,超过的部分会被截断置为0
 	offset := int(c1[8]&0xff) + int(c1[9]&0xff) + int(c1[10]&0xff) + int(c1[11]&0xff)
 	// 这里offset可能太大 可能需要处理一下   比如  offset %  C1S1_DIGEST_OFFSET_MAX 可以保证offset不会超出OFFSET_MAX
 	digestDataOffset := (offset%C1S1_DIGEST_OFFSET_MAX) + C1S1_TIME_SIZE + C1S1_VERSION_SIZE + C1S1_DIGEST_OFFSET_SIZE
@@ -272,6 +292,19 @@ func getDigestDataOffset(c1[]byte) int{
 
 	return digestDataOffset
 }
+
+func ReadByteToBuf(conn io.Reader , size int)([]byte , error){
+
+	buf := make([]byte, size)
+
+	_ , err := conn.Read(buf)
+	if err != nil {
+		return buf , err
+	}
+
+	return buf , err
+}
+
 
 func getKeyOffset(c1 []byte)int{
 	/*
