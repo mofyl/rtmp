@@ -1,4 +1,4 @@
-package until
+package utils
 
 var (
 	BigEndian bigEndian

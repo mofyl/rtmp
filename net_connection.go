@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"net"
 	"rtmp/mem_pool"
+	"rtmp/utils"
 )
 
 type NetConnection struct {
@@ -31,6 +32,11 @@ func (conn *NetConnection) addWriteSeqNum() {
 func (conn *NetConnection) readByte() (byte, error) {
 	conn.addReadSeqNum()
 	return conn.rw.ReadByte()
+}
+
+func (conn *NetConnection) readFull(b []byte) (int, error) {
+	conn.addReadSeqNum()
+	return conn.rw.Read(b)
 }
 
 func (conn *NetConnection) readChunk() (*Chunk, error) {
@@ -74,12 +80,25 @@ func (conn *NetConnection) readChunk() (*Chunk, error) {
 
 */
 func (conn *NetConnection) buildChunkHeader(chunkType byte, chunkHeader *ChunkHeader) (*ChunkHeader, error) {
-
+	h := &ChunkHeader{}
 	switch chunkType {
 	case 0:
 		// 前三个byte为 timestamp
 		b := mem_pool.GetSlice(3)
+		_, err := conn.readFull(b)
+		if err != nil {
+			return nil, err
+		}
+		h.Timestamp = utils.BigEndian.Uint24(b)
 
+		// 再3个为 Message Len
+		if _, err := conn.readFull(b); err != nil {
+			return nil, err
+		}
+		h.MessageLength = utils.BigEndian.Uint24(b)
+		mem_pool.RecycleSlice(b)
+
+		// 后面一个byte是 message Type
 	case 1:
 	case 2:
 	case 3:
