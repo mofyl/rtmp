@@ -8,6 +8,19 @@ type ChunkHeader struct {
 	// ChunkData
 }
 
+func (h *ChunkHeader) Clone() *ChunkHeader {
+	head := rtmpHeadPool.Get().(*ChunkHeader)
+
+	head.ChunkStreamID = h.ChunkStreamID
+	head.Timestamp = h.Timestamp
+	head.MessageLength = h.MessageLength
+	head.MessageTypeID = h.MessageTypeID
+	head.MessageStreamID = h.MessageStreamID
+	head.ExtendTimestamp = h.ExtendTimestamp
+
+	return head
+}
+
 type Chunk struct {
 	*ChunkHeader
 	Body    []byte

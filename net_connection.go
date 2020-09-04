@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"net"
 	"rtmp/mem_pool"
 	"rtmp/utils"
@@ -10,33 +11,40 @@ import (
 type NetConnection struct {
 	conn           net.Conn
 	rw             *bufio.ReadWriter
-	writeChunkSize int64
-	readChunkSize  int64
+	writeChunkSize int
+	readChunkSize  int
 
-	streamID   uint32
-	rtmpHeader map[uint32]*ChunkHeader // rtmp 传输的头部可能是不完全的，但是第一个一定是完整的 这个完整的我们需要记录下来
-	appName    string
+	streamID uint32
+
+	// rtmp 传输的头部可能是不完全的，但是第一个一定是完整的 这个完整的我们需要记录下来
+	// 然后后面再来相同ChunkID的头部，我们直接修改这个完整的就好了
+	rtmpHeader map[uint32]*ChunkHeader
+	// rtmp 的body可能是不完全的 因为每个chunk最大128byte 我们就需要将每个body拼接起来
+	rtmpBody map[uint32][]byte
+	appName  string
 
 	readSeqNum  uint32
 	writeSeqNum uint32
 }
 
-func (conn *NetConnection) addReadSeqNum() {
-	conn.readSeqNum++
+func (conn *NetConnection) addReadSeqNum(n int) {
+	conn.readSeqNum += uint32(n)
 }
 
-func (conn *NetConnection) addWriteSeqNum() {
-	conn.writeSeqNum++
+func (conn *NetConnection) addWriteSeqNum(n int) {
+	conn.writeSeqNum += uint32(n)
 }
 
-func (conn *NetConnection) readByte() (byte, error) {
-	conn.addReadSeqNum()
-	return conn.rw.ReadByte()
+func (conn *NetConnection) readByte() (b byte, err error) {
+	b, err = conn.rw.ReadByte()
+	conn.addReadSeqNum(1)
+	return
 }
 
-func (conn *NetConnection) readFull(b []byte) (int, error) {
-	conn.addReadSeqNum()
-	return conn.rw.Read(b)
+func (conn *NetConnection) readFull(b []byte) (n int, err error) {
+	n, err = conn.rw.Read(b)
+	conn.addReadSeqNum(n)
+	return
 }
 
 func (conn *NetConnection) readChunk() (*Chunk, error) {
@@ -68,6 +76,55 @@ func (conn *NetConnection) readChunk() (*Chunk, error) {
 	}
 
 	conn.buildChunkHeader(chunkType, fullHead)
+
+	currentBody, ok := conn.rtmpBody[streamID]
+
+	//
+	//if chunkType != 3 && !ok {
+	//
+	//}
+	//
+	msgLen := int(fullHead.MessageLength)
+	if !ok {
+		currentBody = mem_pool.GetSlice(msgLen)[:0]
+		conn.rtmpBody[streamID] = currentBody
+	}
+
+	// 已经读取的长度
+	readed := len(currentBody)
+	// 若是已经读完了 就不需要在读取了
+	if readed == msgLen {
+
+		msg := chunkMsgPool.Get().(*Chunk)
+
+		msg.MsgData = nil
+		msg.Body = currentBody
+		msg.ChunkHeader = fullHead
+		msg.ChunkHeader = fullHead.Clone()
+		GetRtmpMsgData(msg)
+		delete(conn.rtmpBody, msg.ChunkStreamID)
+		return msg, nil
+	}
+
+	// 这里的ChunkSize是推流端发送过来的 可能每个包的chunkSize都不同
+	needRead := conn.readChunkSize
+	// 用总的长度减去 已读的，就是需要读取的
+	unRead := msgLen - readed
+	// 若没读取的needRead < 当前的ChunkSize 那么就需要
+	if unRead > needRead {
+		// 若未读取的超过当前readChunkSize 则只会读取ChunkSize这么大
+		unRead = needRead
+	} else if unRead < needRead {
+		needRead = unRead
+	}
+
+	if n, err := conn.readFull(currentBody[readed : needRead+readed]); err != nil {
+		readed += n
+	}
+
+	currentBody = currentBody[:readed]
+	conn.rtmpBody[streamID] = currentBody
+
 	return nil, nil
 }
 
@@ -79,31 +136,123 @@ func (conn *NetConnection) readChunk() (*Chunk, error) {
 		3时 MsgHeader为部分头部 占用0byte
 
 */
-func (conn *NetConnection) buildChunkHeader(chunkType byte, chunkHeader *ChunkHeader) (*ChunkHeader, error) {
-	h := &ChunkHeader{}
+func (conn *NetConnection) buildChunkHeader(chunkType byte, h *ChunkHeader) (*ChunkHeader, error) {
+
 	switch chunkType {
 	case 0:
-		// 前三个byte为 timestamp
-		b := mem_pool.GetSlice(3)
-		_, err := conn.readFull(b)
-		if err != nil {
-			return nil, err
-		}
-		h.Timestamp = utils.BigEndian.Uint24(b)
-
-		// 再3个为 Message Len
-		if _, err := conn.readFull(b); err != nil {
-			return nil, err
-		}
-		h.MessageLength = utils.BigEndian.Uint24(b)
-		mem_pool.RecycleSlice(b)
-
-		// 后面一个byte是 message Type
+		return conn.chunkType0(h)
 	case 1:
+		return conn.chunkType1(h)
 	case 2:
+		return conn.chunkType2(h)
 	case 3:
+		h.ChunkType = chunkType
+		return h, nil
 	}
 	return nil, nil
+}
+
+func (conn *NetConnection) chunkType0(h *ChunkHeader) (*ChunkHeader, error) {
+
+	// 前三个byte为 timestamp
+	b := mem_pool.GetSlice(3)
+	defer mem_pool.RecycleSlice(b)
+	_, err := conn.readFull(b)
+	if err != nil {
+		return nil, err
+	}
+	h.Timestamp = utils.BigEndian.Uint24(b)
+
+	// 再3个为 Message Len
+	if _, err := conn.readFull(b); err != nil {
+		return nil, err
+	}
+	h.MessageLength = utils.BigEndian.Uint24(b)
+	// 后面一个byte是 message Type
+	mb, err := conn.readByte()
+	if err != nil {
+		return nil, err
+	}
+	h.MessageTypeID = mb
+	// 再来4个是 msgStreamID 和 前面 basicHeader 中的chunkID相同 不过这里的ID是用小端来存储的
+	b4 := mem_pool.GetSlice(4)
+	mem_pool.RecycleSlice(b4)
+	_, err = conn.readFull(b4)
+	if err != nil {
+		return nil, err
+	}
+	h.MessageStreamID = binary.LittleEndian.Uint32(b4)
+
+	err = conn.getExtendTimestamp(h)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return h, nil
+}
+
+func (conn *NetConnection) chunkType1(h *ChunkHeader) (*ChunkHeader, error) {
+	// 前3byte为timestamp 这里的timestamp是前一个包的时间差值
+	b3 := mem_pool.GetSlice(3)
+	mem_pool.RecycleSlice(b3)
+	_, err := conn.readFull(b3)
+	if err != nil {
+		return nil, err
+	}
+	h.Timestamp += utils.BigEndian.Uint24(b3)
+
+	// 后3byte为messageLength
+	_, err = conn.readFull(b3)
+	if err != nil {
+		return nil, err
+	}
+
+	b1, err := conn.readByte()
+	if err != nil {
+		return nil, err
+	}
+
+	h.MessageTypeID = b1
+
+	err = conn.getExtendTimestamp(h)
+	if err != nil {
+		return nil, err
+	}
+
+	return h, nil
+}
+
+func (conn *NetConnection) chunkType2(h *ChunkHeader) (*ChunkHeader, error) {
+
+	b3 := mem_pool.GetSlice(3)
+	defer mem_pool.RecycleSlice(b3)
+	_, err := conn.readFull(b3)
+
+	if err != nil {
+		return nil, err
+	}
+
+	h.Timestamp += binary.BigEndian.Uint32(b3)
+
+	if err = conn.getExtendTimestamp(h); err != nil {
+		return nil, err
+	}
+
+	return h, nil
+}
+
+func (conn *NetConnection) getExtendTimestamp(h *ChunkHeader) error {
+	b4 := mem_pool.GetSlice(4)
+	defer mem_pool.RecycleSlice(b4)
+	// 判断是否要读取ExtendTimestamp中的值
+	if h.Timestamp == 0xfffff {
+		if _, err := conn.readFull(b4); err != nil {
+			return err
+		}
+		h.ExtendTimestamp = binary.BigEndian.Uint32(b4)
+	}
+	return nil
 }
 
 func (conn *NetConnection) getChunkStreamID(csid uint32) (uint32, error) {
