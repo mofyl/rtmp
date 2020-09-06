@@ -127,6 +127,7 @@ func handlerUserControlMessage(controlMsg UserControlMessage) interface{} {
 			Millisecond: binary.BigEndian.Uint32(controlMsg.EventData[4:]),
 		}
 	case RTMP_USER_PING_REPONSE, RTMP_USER_EMPTY:
+		//
 		return &controlMsg
 	default:
 		return &controlMsg
