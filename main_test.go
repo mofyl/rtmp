@@ -42,3 +42,20 @@ func TestSlice(t *testing.T) {
 	//data1 := *(*[5]int)(unsafe.Pointer(hdr1.Data))
 	//fmt.Println(data1)
 }
+
+func TestSwitch(t *testing.T) {
+
+	e := "qq"
+
+	switch e {
+	case "a":
+		fmt.Println("111")
+	case "b":
+		fmt.Println("222")
+	case "qq":
+		fmt.Println("33")
+	case "ee":
+		fmt.Println("555")
+	}
+
+}

@@ -3,9 +3,14 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"fmt"
 	"net"
 	"rtmp/mem_pool"
 	"rtmp/utils"
+)
+
+const (
+	SendAckWindowSizeMessage = "Send Window Acknowledgement Size Message"
 )
 
 type NetConnection struct {
@@ -20,11 +25,11 @@ type NetConnection struct {
 	// 然后后面再来相同ChunkID的头部，我们直接修改这个完整的就好了
 	rtmpHeader map[uint32]*ChunkHeader
 	// rtmp 的body可能是不完全的 因为每个chunk最大128byte 我们就需要将每个body拼接起来
-	rtmpBody map[uint32][]byte
-	appName  string
-
-	readSeqNum  uint32
-	writeSeqNum uint32
+	rtmpBody       map[uint32][]byte
+	appName        string
+	objectEncoding float64
+	readSeqNum     uint32
+	writeSeqNum    uint32
 }
 
 func (conn *NetConnection) addReadSeqNum(n int) {
@@ -46,6 +51,34 @@ func (conn *NetConnection) readFull(b []byte) (n int, err error) {
 	conn.addReadSeqNum(n)
 	return
 }
+
+func (conn *NetConnection) OnConnect() (err error) {
+
+	if msg, err := conn.readChunk(); err == nil {
+		defer chunkMsgPool.Put(msg)
+		if connect, ok := msg.MsgData.(*CallMessage); ok {
+			if connect.CommandName == CommandConnect {
+				v := DecodeAMFObject(connect.Object)
+				if v == nil {
+					err = fmt.Errorf("OnConnect Decode AMF Object Fail")
+				}
+				if appName, ok := v["app"]; ok {
+					conn.appName = appName.(string)
+				}
+
+				if objEncoding, ok := v["objectEncoding"]; ok {
+					conn.objectEncoding = objEncoding.(float64)
+				}
+
+			}
+		}
+	}
+	return
+}
+
+// func (conn *NetConnection) SendMessage(message string, args interface{}) error {
+
+// }
 
 func (conn *NetConnection) readChunk() (*Chunk, error) {
 
@@ -89,10 +122,33 @@ func (conn *NetConnection) readChunk() (*Chunk, error) {
 		currentBody = mem_pool.GetSlice(msgLen)[:0]
 		conn.rtmpBody[streamID] = currentBody
 	}
-
 	// 已经读取的长度
 	readed := len(currentBody)
+
+	// 这里的ChunkSize是推流端发送过来的 可能每个包的chunkSize都不同
+	needRead := conn.readChunkSize
+	// 用总的长度减去 已读的，就是需要读取的
+	unRead := msgLen - readed
+	// 若没读取的needRead < 当前的ChunkSize 那么就不管
+	if unRead < needRead {
+		needRead = unRead
+	}
+
+	// if n, err := io.ReadFull(conn.rw, currentBody[readed:needRead+readed]); err != nil {
+	// 	readed += n
+	// }
+	if n, err := conn.readFull(currentBody[readed : needRead+readed]); err != nil {
+		fmt.Println("conn ReadFull Err ", err.Error())
+	} else {
+		readed += n
+	}
+
+	currentBody = currentBody[:readed]
+	conn.rtmpBody[streamID] = currentBody
+
 	// 若是已经读完了 就不需要在读取了
+	// 这里一定要放到最后 若在前面的话 读取完 完整的包后，还会进行递归，那么就还去读数据
+	// 但是此时流中已经没有数据了就会阻塞
 	if readed == msgLen {
 
 		msg := chunkMsgPool.Get().(*Chunk)
@@ -101,31 +157,15 @@ func (conn *NetConnection) readChunk() (*Chunk, error) {
 		msg.Body = currentBody
 		msg.ChunkHeader = fullHead
 		msg.ChunkHeader = fullHead.Clone()
-		GetRtmpMsgData(msg)
+		msg.MsgData, err = GetRtmpMsgData(msg)
+		if err != nil {
+			return nil, err
+		}
 		delete(conn.rtmpBody, msg.ChunkStreamID)
 		return msg, nil
 	}
 
-	// 这里的ChunkSize是推流端发送过来的 可能每个包的chunkSize都不同
-	needRead := conn.readChunkSize
-	// 用总的长度减去 已读的，就是需要读取的
-	unRead := msgLen - readed
-	// 若没读取的needRead < 当前的ChunkSize 那么就需要
-	if unRead > needRead {
-		// 若未读取的超过当前readChunkSize 则只会读取ChunkSize这么大
-		unRead = needRead
-	} else if unRead < needRead {
-		needRead = unRead
-	}
-
-	if n, err := conn.readFull(currentBody[readed : needRead+readed]); err != nil {
-		readed += n
-	}
-
-	currentBody = currentBody[:readed]
-	conn.rtmpBody[streamID] = currentBody
-
-	return nil, nil
+	return conn.readChunk()
 }
 
 /*
@@ -136,7 +176,7 @@ func (conn *NetConnection) readChunk() (*Chunk, error) {
 		3时 MsgHeader为部分头部 占用0byte
 
 */
-func (conn *NetConnection) buildChunkHeader(chunkType byte, h *ChunkHeader) (*ChunkHeader, error) {
+func (conn *NetConnection) buildChunkHeader(chunkType byte, h *ChunkHeader) error {
 
 	switch chunkType {
 	case 0:
@@ -147,31 +187,31 @@ func (conn *NetConnection) buildChunkHeader(chunkType byte, h *ChunkHeader) (*Ch
 		return conn.chunkType2(h)
 	case 3:
 		h.ChunkType = chunkType
-		return h, nil
+		return nil
 	}
-	return nil, nil
+	return fmt.Errorf("Not Support ChunkType type is %d", chunkType)
 }
 
-func (conn *NetConnection) chunkType0(h *ChunkHeader) (*ChunkHeader, error) {
+func (conn *NetConnection) chunkType0(h *ChunkHeader) error {
 
 	// 前三个byte为 timestamp
 	b := mem_pool.GetSlice(3)
 	defer mem_pool.RecycleSlice(b)
 	_, err := conn.readFull(b)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	h.Timestamp = utils.BigEndian.Uint24(b)
 
 	// 再3个为 Message Len
 	if _, err := conn.readFull(b); err != nil {
-		return nil, err
+		return err
 	}
 	h.MessageLength = utils.BigEndian.Uint24(b)
 	// 后面一个byte是 message Type
 	mb, err := conn.readByte()
 	if err != nil {
-		return nil, err
+		return err
 	}
 	h.MessageTypeID = mb
 	// 再来4个是 msgStreamID 和 前面 basicHeader 中的chunkID相同 不过这里的ID是用小端来存储的
@@ -179,67 +219,67 @@ func (conn *NetConnection) chunkType0(h *ChunkHeader) (*ChunkHeader, error) {
 	mem_pool.RecycleSlice(b4)
 	_, err = conn.readFull(b4)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	h.MessageStreamID = binary.LittleEndian.Uint32(b4)
 
 	err = conn.getExtendTimestamp(h)
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return h, nil
+	return nil
 }
 
-func (conn *NetConnection) chunkType1(h *ChunkHeader) (*ChunkHeader, error) {
+func (conn *NetConnection) chunkType1(h *ChunkHeader) error {
 	// 前3byte为timestamp 这里的timestamp是前一个包的时间差值
 	b3 := mem_pool.GetSlice(3)
 	mem_pool.RecycleSlice(b3)
 	_, err := conn.readFull(b3)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	h.Timestamp += utils.BigEndian.Uint24(b3)
 
 	// 后3byte为messageLength
 	_, err = conn.readFull(b3)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	b1, err := conn.readByte()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	h.MessageTypeID = b1
 
 	err = conn.getExtendTimestamp(h)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return h, nil
+	return nil
 }
 
-func (conn *NetConnection) chunkType2(h *ChunkHeader) (*ChunkHeader, error) {
+func (conn *NetConnection) chunkType2(h *ChunkHeader) error {
 
 	b3 := mem_pool.GetSlice(3)
 	defer mem_pool.RecycleSlice(b3)
 	_, err := conn.readFull(b3)
 
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	h.Timestamp += binary.BigEndian.Uint32(b3)
 
 	if err = conn.getExtendTimestamp(h); err != nil {
-		return nil, err
+		return err
 	}
 
-	return h, nil
+	return nil
 }
 
 func (conn *NetConnection) getExtendTimestamp(h *ChunkHeader) error {

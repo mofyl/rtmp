@@ -15,6 +15,9 @@ func GetSlice(s int) []byte {
 }
 
 func RecycleSlice(slice []byte) {
+	for i := 0; i < len(slice); i++ {
+		slice[i] = 0
+	}
 	bitPool.Free(slice)
 }
 

@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"rtmp/mem_pool"
 )
 
 func main() {
+
+	mem_pool.InitPool()
 
 	l, err := net.Listen("tcp4", "127.0.0.1:9000")
 
@@ -27,9 +30,10 @@ func main() {
 		nc := &NetConnection{
 			conn:           conn,
 			rw:             bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn)),
-			writeChunkSize: RTMP_DEFAULT_CHUNK_SIZE,
-			readChunkSize:  RTMP_DEFAULT_CHUNK_SIZE,
+			writeChunkSize: RtmpDefaultChunkSize,
+			readChunkSize:  RtmpDefaultChunkSize,
 			rtmpHeader:     make(map[uint32]*ChunkHeader),
+			rtmpBody:       make(map[uint32][]byte),
 		}
 
 		err = handshake(nc.rw)
@@ -40,11 +44,7 @@ func main() {
 			break
 		}
 		//// 开始读Chunk
-		//if _, err := processStream(nc.rw); err != nil {
-		//	fmt.Println("processStream err is ", err)
-		//	conn.Close()
-		//	break
-		//}
+		nc.OnConnect()
 
 	}
 
