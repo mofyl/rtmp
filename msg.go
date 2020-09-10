@@ -9,6 +9,7 @@ import (
 const (
 	// RtmpDefaultChunkSize = 128
 	RtmpDefaultChunkSize = 128
+	RtmpMaxChunkSize     = 65536
 	// Chunk
 	RtmpMsgChunkSize = 1
 	RtmpMsgAbort     = 2
@@ -57,6 +58,12 @@ const (
 	CommandOnStatus      = "onStatus"
 	CommandFCPublish     = "FCPublish"
 	CommandFcUnpublish   = "FCUnpublish"
+
+	RtmpCSIDControl = 0x02
+	RtmpCSIDCommand = 0x03
+	RtmpCSIDAudio   = 0x06
+	RtmpCSIDData    = 0x05
+	RtmpCSIDVideo   = 0x05
 )
 
 var (
@@ -73,6 +80,14 @@ var (
 	}
 )
 
+type MessageEncode interface {
+	Encode() []byte
+}
+
+type HaveStreamID interface {
+	GetStreamID() uint32
+}
+
 type UserControlMessage struct {
 	EventType uint16
 	EventData []byte
@@ -83,6 +98,14 @@ type StreamIDMessage struct {
 	StreamID uint32
 }
 
+func (msg *StreamIDMessage) Encode() []byte {
+	b := make([]byte, 6)
+	binary.BigEndian.PutUint16(b, msg.EventType)
+	binary.BigEndian.PutUint32(b[2:], msg.StreamID)
+	msg.EventData = b[2:]
+	return b
+}
+
 type SetBufferMessage struct {
 	StreamIDMessage
 	Millisecond uint32
@@ -91,6 +114,13 @@ type SetBufferMessage struct {
 type SetPeerBandWidthMessage struct {
 	AcknowledgementWindowSize uint32 // 4 byte
 	LimitType                 byte
+}
+
+func (msg *SetPeerBandWidthMessage) Encode() []byte {
+	b := make([]byte, 5)
+	binary.BigEndian.PutUint32(b, msg.AcknowledgementWindowSize)
+	b[4] = msg.LimitType
+	return b
 }
 
 func (msg *SetBufferMessage) Encode() []byte {
@@ -129,6 +159,40 @@ type PlayMessage struct {
 	Start      uint64
 	Duration   uint64
 	Reset      bool
+}
+
+type Uint32Message uint32
+
+func (msg Uint32Message) Encode() []byte {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, uint32(msg))
+	return b
+}
+
+type ResponseConnectMessage struct {
+	CommandMessage
+	Properties interface{} `json:",omitempty"`
+	Infomation interface{} `json:",omitempty"`
+}
+
+func (msg *ResponseConnectMessage) Encode() []byte {
+}
+
+func newChunkHeaderFromMessageType(msgType byte) *ChunkHeader {
+
+	head := &ChunkHeader{}
+
+	head.ChunkStreamID = RtmpCSIDControl
+
+	if msgType == RtmpMsgAMF0Command {
+		head.ChunkStreamID = RtmpCSIDCommand
+	}
+
+	head.Timestamp = 0
+	head.MessageTypeID = msgType
+	head.MessageStreamID = 0
+	head.ExtendTimestamp = 0
+	return head
 }
 
 // GetRtmpMsgData GetRtmpMsgData
@@ -218,7 +282,6 @@ func handlerCommand(cmd CommandMessage, amf *AMF, chunk *Chunk) (interface{}, er
 		if err != nil {
 			return nil, err
 		}
-		fmt.Println(amf.Len())
 		info, err := amf.readObject()
 		if err != nil {
 			return nil, err

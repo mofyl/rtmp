@@ -44,7 +44,10 @@ func main() {
 			break
 		}
 		//// 开始读Chunk
-		nc.OnConnect()
+		if err := nc.OnConnect(); err != nil {
+			fmt.Println("OnConnect Fail Err is ", err.Error())
+			continue
+		}
 
 	}
 
