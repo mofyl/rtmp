@@ -171,11 +171,25 @@ func (msg Uint32Message) Encode() []byte {
 
 type ResponseConnectMessage struct {
 	CommandMessage
-	Properties interface{} `json:",omitempty"`
-	Infomation interface{} `json:",omitempty"`
+	Properties AMFObjects `json:",omitempty"`
+	Infomation AMFObjects `json:",omitempty"`
 }
 
 func (msg *ResponseConnectMessage) Encode() []byte {
+	amf := NewAMFEncode()
+
+	amf.writeString(msg.CommandName)
+	amf.writeNumber(float64(msg.TransactionID))
+
+	if msg.Properties != nil {
+		amf.encodeObject(msg.Properties)
+	}
+
+	if msg.Infomation != nil {
+		amf.encodeObject(msg.Infomation)
+	}
+
+	return amf.Bytes()
 }
 
 func newChunkHeaderFromMessageType(msgType byte) *ChunkHeader {

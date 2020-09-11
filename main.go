@@ -36,20 +36,8 @@ func main() {
 			rtmpBody:       make(map[uint32][]byte),
 		}
 
-		err = handshake(nc.rw)
-
-		if err != nil {
-			fmt.Println("handshake err is ", err.Error())
-			conn.Close()
-			break
-		}
-		//// 开始读Chunk
-		if err := nc.OnConnect(); err != nil {
-			fmt.Println("OnConnect Fail Err is ", err.Error())
-			continue
-		}
+		go nc.HandlerMessage()
 
 	}
 
-	l.Close()
 }

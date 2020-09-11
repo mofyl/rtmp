@@ -39,6 +39,12 @@ type AMF struct {
 	*bytes.Buffer
 }
 
+func NewAMFEncode() *AMF {
+	return &AMF{
+		&bytes.Buffer{},
+	}
+}
+
 func NewAMF(b []byte) *AMF {
 	return &AMF{
 		bytes.NewBuffer(b),
@@ -74,11 +80,12 @@ func (amf *AMF) writeString(v string) error {
 	if err != nil {
 		return err
 	}
+	vB := []byte(v)
 	// 将长度写进去
-	if err = amf.writeSize16(uint16(len(v))); err != nil {
+	if err = amf.writeSize16(uint16(len(vB))); err != nil {
 		return err
 	}
-	return binary.Write(amf, binary.BigEndian, v)
+	return binary.Write(amf, binary.BigEndian, vB)
 }
 
 func (amf *AMF) readObjectKey() (string, error) {
@@ -93,6 +100,20 @@ func (amf *AMF) readObjectKey() (string, error) {
 	}
 
 	return string(b), nil
+}
+
+func (amf *AMF) writeObjectKey(key string) error {
+
+	keyB := []byte(key)
+	if err := amf.writeSize16(uint16(len(keyB))); err != nil {
+		return err
+	}
+
+	if err := binary.Write(amf, binary.BigEndian, keyB); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (amf *AMF) readSize16() (int, error) {
@@ -136,6 +157,18 @@ func (amf *AMF) readBool() (bool, error) {
 
 	return b == 1, nil
 
+}
+
+func (amf *AMF) writeBool(b bool) error {
+	// 写入类型
+	if err := amf.WriteByte(AMF0Boolean); err != nil {
+		return err
+	}
+	//写入值
+	if b {
+		return amf.WriteByte(byte(1))
+	}
+	return amf.WriteByte(byte(0))
 }
 
 func (amf *AMF) readObject() (AMFObjects, error) {
@@ -217,6 +250,55 @@ func (amf *AMF) decodeObject() (AMFObject, error) {
 	}
 
 	return nil, fmt.Errorf("Not Support Type , type is %d", t)
+
+}
+
+func (amf *AMF) encodeObject(t AMFObjects) error {
+
+	// 写入类型名字
+	amf.WriteByte(AMF0Object)
+	// 最后写入结束
+	defer amf.WriteByte(AMF0EndObject)
+
+	// 将类型写入
+	for k, v := range t {
+		// 写一个key 写一个值
+		switch vv := v.(type) {
+		case string:
+			return amf.writeObjectString(k, vv)
+		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			return amf.writeObjectNumer(k, vv.(float64))
+		case bool:
+			return amf.writeObjectBool(k, vv)
+		}
+	}
+	return nil
+}
+
+func (amf *AMF) writeObjectString(key, value string) error {
+
+	if err := amf.writeObjectKey(key); err != nil {
+		return err
+	}
+
+	return amf.writeString(value)
+}
+
+func (amf *AMF) writeObjectNumer(key string, v float64) error {
+
+	if err := amf.writeObjectKey(key); err != nil {
+		return err
+	}
+	return amf.writeNumber(v)
+
+}
+
+func (amf *AMF) writeObjectBool(key string, v bool) error {
+
+	if err := amf.writeObjectKey(key); err != nil {
+		return err
+	}
+	return amf.writeBool(v)
 
 }
 

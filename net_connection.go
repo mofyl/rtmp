@@ -3,13 +3,12 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net"
 	"rtmp/mem_pool"
 	"rtmp/utils"
 	"sync/atomic"
-
-	"github.com/pkg/errors"
 )
 
 const (
@@ -19,8 +18,12 @@ const (
 	SendConnectResponseMessage  = "Send Connect Response Message"
 )
 
+const (
+	EngineVersion = "M/1.0"
+)
+
 type NetConnection struct {
-	nc             net.Conn
+	conn           net.Conn
 	rw             *bufio.ReadWriter
 	writeChunkSize int
 	readChunkSize  int
@@ -72,7 +75,22 @@ func (nc *NetConnection) writeFull(b []byte) (n int, err error) {
 	return
 }
 
-func (nc *NetConnection) OnConnect() (err error) {
+func (nc *NetConnection) HandlerMessage() {
+	var err error
+	if err = handshake(nc.rw); err != nil {
+		fmt.Println("HandShake Fail")
+		return
+	}
+	fmt.Println("HandShake Success")
+	if err = nc.onConnect(); err != nil {
+		fmt.Println("Try To Connect Fail")
+		return
+	}
+	fmt.Println("Try Connect Success")
+
+}
+
+func (nc *NetConnection) onConnect() (err error) {
 
 	if msg, err := nc.readChunk(); err == nil {
 		defer chunkMsgPool.Put(msg)
@@ -91,6 +109,11 @@ func (nc *NetConnection) OnConnect() (err error) {
 				}
 
 				// 回复消息
+				nc.SendMessage(SendAckWindowSizeMessage, uint32(512<<10))
+				nc.SendMessage(SendSetPeerBandWidthMessage, uint32(512<<10))
+				nc.SendMessage(SendStreamBeginMessage, nil)
+				nc.SendMessage(SendConnectResponseMessage, nc.objectEncoding)
+				fmt.Println("OnConnect TryConnect Response is Done.")
 			}
 		}
 	}
@@ -122,7 +145,22 @@ func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 		// 其实这里还没有streamID 后面客户端回复 建立连接的时候会把streamID带过来
 		return nc.writeMessage(RtmpMsgUserControl, &StreamIDMessage{UserControlMessage{EventType: RtmpUserStreamBegin}, nc.streamID})
 	case SendConnectResponseMessage:
+		pro := newAMFObjects()
+		info := newAMFObjects()
 
+		pro["fmsVer"] = EngineVersion
+		pro["capabilities"] = 31
+		pro["mode"] = 1
+		pro["Author"] = "dexter"
+		info["level"] = LevelStatus
+		info["code"] = NetConnectionConnectSuccess
+		info["objectEncoding"] = args.(float64)
+		m := new(ResponseConnectMessage)
+		m.CommandName = ResponseResult
+		m.TransactionID = 1
+		m.Properties = pro
+		m.Infomation = info
+		return nc.writeMessage(RtmpMsgAMF0Command, m)
 	}
 
 	return errors.New("SendMessage Not Support Type is " + msgType)
