@@ -94,6 +94,14 @@ type UserControlMessage struct {
 	EventData []byte
 }
 
+func (msg *UserControlMessage) Encode() []byte {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, msg.EventType)
+	msg.EventData = b[2:]
+
+	return b
+}
+
 type StreamIDMessage struct {
 	UserControlMessage
 	StreamID uint32

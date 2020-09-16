@@ -19,6 +19,8 @@ const (
 	SendSetPeerBandWidthMessage = "Send Set Peer Bandwidth Message"
 	SendStreamBeginMessage      = "Send Stream Begin Message"
 	SendConnectResponseMessage  = "Send Connect Response Message"
+	SendPingResponseMessage     = "Send Ping Response Message"
+	SendAckMessage              = "Send Ack Message"
 )
 
 const (
@@ -44,6 +46,7 @@ type NetConnection struct {
 	writeSeqNum    uint32 // 一些发送出去的byte数
 	totalWrite     uint32 // 一共发送出去的byte数
 	totalRead      uint32 // 一共已经读取到的byte数
+	bandwith       uint32 // 发送窗口限制
 }
 
 func (nc *NetConnection) addReadSeqNum(n int) {
@@ -95,11 +98,26 @@ func (nc *NetConnection) HandlerMessage() {
 
 		return
 	}
+
+	for {
+		msg, err := nc.getMsg()
+
+		if err != nil {
+			fmt.Println("HandlerMessage Error is ", err.Error())
+
+			break
+		}
+
+		if msg.MessageLength == 0 {
+			continue
+		}
+	}
+
 	fmt.Println("Try Connect Success")
 }
 
 func (nc *NetConnection) onConnect() (err error) {
-	msg, err := nc.readChunk()
+	msg, err := nc.getMsg()
 	if err != nil {
 		return
 	}
@@ -136,6 +154,61 @@ func (nc *NetConnection) onConnect() (err error) {
 	return nil
 }
 
+func (nc *NetConnection) getMsg() (*Chunk, error) {
+	if nc.readSeqNum >= nc.bandwith {
+		atomic.AddUint32(&nc.totalRead, nc.readSeqNum)
+		atomic.StoreUint32(&nc.readSeqNum, 0)
+		_ = nc.SendMessage(SendAckMessage, nc.totalRead)
+	}
+
+	msg, err := nc.readChunk()
+
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println("readSeqNum is ", atomic.LoadUint32(&nc.readSeqNum))
+	fmt.Println("bandwith is ", nc.bandwith)
+	fmt.Println("bandwith is ", nc.bandwith)
+	fmt.Println("cur msg id is ", msg.MessageTypeID)
+	// 这里表示是用户控制消息
+	// 消息ID在 1~8
+	if RtmpMsgChunkSize <= msg.MessageTypeID && msg.MessageTypeID <= RtmpMsgEdge {
+		switch msg.MessageTypeID {
+		case RtmpMsgChunkSize:
+			m := msg.MsgData.(uint32)
+			nc.readChunkSize = int(m)
+
+			return nc.getMsg()
+		case RtmpMsgAbort:
+			m := msg.MsgData.(uint32)
+			delete(nc.rtmpBody, m)
+
+			return nc.getMsg()
+		case RtmpMsgAck, RtmpMsgEdge:
+
+			return nc.getMsg()
+		case RtmpMsgUserControl:
+			if _, ok := msg.MsgData.(*PingRequestMessage); ok {
+				_ = nc.SendMessage(SendPingResponseMessage, nil)
+			}
+
+			return nc.getMsg()
+		case RtmpMsgAckSize:
+			m := msg.MsgData.(uint32)
+			nc.bandwith = m
+
+			return nc.getMsg()
+		case RtmpMsgBandWidth:
+			m := msg.MsgData.(*SetPeerBandWidthMessage)
+			nc.bandwith = m.AcknowledgementWindowSize
+
+			return nc.getMsg()
+		}
+	}
+
+	return msg, nil
+}
+
 func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 	switch msgType {
 	case SendAckWindowSizeMessage:
@@ -161,6 +234,13 @@ func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 		}
 		// 其实这里还没有streamID 后面客户端回复 建立连接的时候会把streamID带过来
 		return nc.writeMessage(RtmpMsgUserControl, &StreamIDMessage{UserControlMessage{EventType: RtmpUserStreamBegin}, nc.streamID})
+	case SendAckMessage:
+		num, ok := args.(uint32)
+		if !ok {
+			return errors.New(SendAckMessage + " the paramter is only on(number uint32)!")
+		}
+
+		return nc.writeMessage(RtmpMsgAck, Uint32Message(num))
 	case SendConnectResponseMessage:
 		pro := newAMFObjects()
 		info := newAMFObjects()
@@ -179,6 +259,12 @@ func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 		m.Infomation = info
 
 		return nc.writeMessage(RtmpMsgAMF0Command, m)
+	case SendPingResponseMessage:
+		if args != nil {
+			return errors.New(SendPingResponseMessage + " the paramter is nil")
+		}
+
+		return nc.writeMessage(RtmpMsgUserControl, &UserControlMessage{EventType: RtmpUserPingResponse})
 	}
 
 	return errors.New("SendMessage Not Support Type is " + msgType)
