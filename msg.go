@@ -2,8 +2,9 @@ package main
 
 import (
 	"encoding/binary"
-	"fmt"
 	"sync"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -103,6 +104,7 @@ func (msg *StreamIDMessage) Encode() []byte {
 	binary.BigEndian.PutUint16(b, msg.EventType)
 	binary.BigEndian.PutUint32(b[2:], msg.StreamID)
 	msg.EventData = b[2:]
+
 	return b
 }
 
@@ -120,6 +122,7 @@ func (msg *SetPeerBandWidthMessage) Encode() []byte {
 	b := make([]byte, 5)
 	binary.BigEndian.PutUint32(b, msg.AcknowledgementWindowSize)
 	b[4] = msg.LimitType
+
 	return b
 }
 
@@ -129,6 +132,7 @@ func (msg *SetBufferMessage) Encode() []byte {
 	binary.BigEndian.PutUint32(b[2:], msg.StreamID)
 	binary.BigEndian.PutUint32(b[6:], msg.Millisecond)
 	msg.EventData = b[2:]
+
 	return b
 }
 
@@ -166,6 +170,7 @@ type Uint32Message uint32
 func (msg Uint32Message) Encode() []byte {
 	b := make([]byte, 4)
 	binary.BigEndian.PutUint32(b, uint32(msg))
+
 	return b
 }
 
@@ -178,22 +183,21 @@ type ResponseConnectMessage struct {
 func (msg *ResponseConnectMessage) Encode() []byte {
 	amf := NewAMFEncode()
 
-	amf.writeString(msg.CommandName)
-	amf.writeNumber(float64(msg.TransactionID))
+	_ = amf.writeString(msg.CommandName)
+	_ = amf.writeNumber(float64(msg.TransactionID))
 
 	if msg.Properties != nil {
-		amf.encodeObject(msg.Properties)
+		_ = amf.encodeObject(msg.Properties)
 	}
 
 	if msg.Infomation != nil {
-		amf.encodeObject(msg.Infomation)
+		_ = amf.encodeObject(msg.Infomation)
 	}
 
 	return amf.Bytes()
 }
 
 func newChunkHeaderFromMessageType(msgType byte) *ChunkHeader {
-
 	head := &ChunkHeader{}
 
 	head.ChunkStreamID = RtmpCSIDControl
@@ -206,12 +210,11 @@ func newChunkHeaderFromMessageType(msgType byte) *ChunkHeader {
 	head.MessageTypeID = msgType
 	head.MessageStreamID = 0
 	head.ExtendTimestamp = 0
+
 	return head
 }
 
-// GetRtmpMsgData GetRtmpMsgData
 func GetRtmpMsgData(chunk *Chunk) (interface{}, error) {
-
 	switch chunk.MessageTypeID {
 	// 这里由于 1,2,3,5的body都是 4byte 所以可以一起解析
 	case RtmpMsgChunkSize, RtmpMsgAbort, RtmpMsgAck, RtmpMsgAckSize:
@@ -233,6 +236,7 @@ func GetRtmpMsgData(chunk *Chunk) (interface{}, error) {
 		if len(chunk.Body) > 4 {
 			m.LimitType = chunk.Body[4]
 		}
+
 		return m, nil
 	case RtmpMsgAudio:
 	case RtmpMsgVideo:
@@ -243,7 +247,8 @@ func GetRtmpMsgData(chunk *Chunk) (interface{}, error) {
 		// 这里表示 使用AMF0编码的
 		return decodeCommandAMF0(chunk)
 	}
-	return nil, fmt.Errorf("Not Support ChunkType type is %d", chunk.ChunkType)
+
+	return nil, errors.Errorf("Not Support ChunkType type is %d", chunk.ChunkType)
 }
 
 func deCodeCommandAMF3(chunk *Chunk) (interface{}, error) {
@@ -265,6 +270,7 @@ func deCodeCommandAMF3(chunk *Chunk) (interface{}, error) {
 	if obj, err = decodeCommandAMF0(chunk); err != nil {
 		return nil, err
 	}
+
 	return obj, nil
 }
 
@@ -285,11 +291,11 @@ func decodeCommandAMF0(chunk *Chunk) (interface{}, error) {
 		CommandName:   cmdName,
 		TransactionID: uint64(transactionID),
 	}
+
 	return handlerCommand(cmdMsg, amf, chunk)
 }
 
 func handlerCommand(cmd CommandMessage, amf *AMF, chunk *Chunk) (interface{}, error) {
-
 	switch cmd.CommandName {
 	case CommandConnect, CommandCall:
 		pro, err := amf.readObject()
@@ -300,6 +306,7 @@ func handlerCommand(cmd CommandMessage, amf *AMF, chunk *Chunk) (interface{}, er
 		if err != nil {
 			return nil, err
 		}
+
 		return &CallMessage{
 			CommandMessage: cmd,
 			Object:         pro,
@@ -308,7 +315,7 @@ func handlerCommand(cmd CommandMessage, amf *AMF, chunk *Chunk) (interface{}, er
 	case CommandCreateStream:
 		// 这里要读取一个null 是因为COMMAND_CREATESTREAM这个协议在CommandMsg后
 		// 后一个null
-		amf.readNull()
+		_, _ = amf.readNull()
 		msgData := &CreateStreamMessage{
 			CommandMessage: cmd,
 		}
@@ -317,10 +324,10 @@ func handlerCommand(cmd CommandMessage, amf *AMF, chunk *Chunk) (interface{}, er
 		} else if err == nil {
 			msgData.cmdMsg = obj
 		}
-		return msgData, nil
 
+		return msgData, nil
 	case CommandPlay:
-		amf.readNull()
+		_, _ = amf.readNull()
 		msgData := &PlayMessage{
 			CommandMessage: cmd,
 		}
@@ -348,14 +355,14 @@ func handlerCommand(cmd CommandMessage, amf *AMF, chunk *Chunk) (interface{}, er
 		} else if err == nil {
 			msgData.Reset = reset
 		}
-		return msgData, nil
 
+		return msgData, nil
 	}
-	return nil, fmt.Errorf("not Support CommandName name is %s", cmd.CommandName)
+
+	return nil, errors.Errorf("not Support CommandName name is %s", cmd.CommandName)
 }
 
 func handlerUserControlMessage(controlMsg UserControlMessage) interface{} {
-
 	switch controlMsg.EventType {
 	case RtmpUserStreamBegin:
 		m := &StreamIDMessage{
@@ -365,6 +372,7 @@ func handlerUserControlMessage(controlMsg UserControlMessage) interface{} {
 		if len(controlMsg.EventData) > 4 {
 			m.StreamID = binary.BigEndian.Uint32(controlMsg.EventData)
 		}
+
 		return m
 	case RtmpUserStreamEOF, RtmpUserStreamDay, RtmpUserStreamRecorded:
 		// 服务端向客户端发送本事件，通知数据回放完成，

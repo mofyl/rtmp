@@ -3,12 +3,15 @@ package main
 import (
 	"bufio"
 	"encoding/binary"
-	"errors"
 	"fmt"
+
+	// "fmt"
 	"net"
 	"rtmp/mem_pool"
 	"rtmp/utils"
 	"sync/atomic"
+
+	"github.com/pkg/errors"
 )
 
 const (
@@ -54,24 +57,28 @@ func (nc *NetConnection) addWriteSeqNum(n int) {
 func (nc *NetConnection) readByte() (b byte, err error) {
 	b, err = nc.rw.ReadByte()
 	nc.addReadSeqNum(1)
+
 	return
 }
 
 func (nc *NetConnection) readFull(b []byte) (n int, err error) {
 	n, err = nc.rw.Read(b)
 	nc.addReadSeqNum(n)
+
 	return
 }
 
 func (nc *NetConnection) writeByte(b byte) error {
 	err := nc.rw.WriteByte(b)
 	nc.addWriteSeqNum(1)
+
 	return err
 }
 
 func (nc *NetConnection) writeFull(b []byte) (n int, err error) {
 	n, err = nc.rw.Write(b)
 	nc.addWriteSeqNum(n)
+
 	return
 }
 
@@ -79,61 +86,71 @@ func (nc *NetConnection) HandlerMessage() {
 	var err error
 	if err = handshake(nc.rw); err != nil {
 		fmt.Println("HandShake Fail")
+
 		return
 	}
 	fmt.Println("HandShake Success")
 	if err = nc.onConnect(); err != nil {
 		fmt.Println("Try To Connect Fail")
+
 		return
 	}
 	fmt.Println("Try Connect Success")
-
 }
 
 func (nc *NetConnection) onConnect() (err error) {
-
-	if msg, err := nc.readChunk(); err == nil {
-		defer chunkMsgPool.Put(msg)
-		if connect, ok := msg.MsgData.(*CallMessage); ok {
-			if connect.CommandName == CommandConnect {
-				v := DecodeAMFObject(connect.Object)
-				if v == nil {
-					err = fmt.Errorf("OnConnect Decode AMF Object Fail")
-				}
-				if appName, ok := v["app"]; ok {
-					nc.appName = appName.(string)
-				}
-
-				if objEncoding, ok := v["objectEncoding"]; ok {
-					nc.objectEncoding = objEncoding.(float64)
-				}
-
-				// 回复消息
-				nc.SendMessage(SendAckWindowSizeMessage, uint32(512<<10))
-				nc.SendMessage(SendSetPeerBandWidthMessage, uint32(512<<10))
-				nc.SendMessage(SendStreamBeginMessage, nil)
-				nc.SendMessage(SendConnectResponseMessage, nc.objectEncoding)
-				fmt.Println("OnConnect TryConnect Response is Done.")
-			}
-		}
+	msg, err := nc.readChunk()
+	if err != nil {
+		return
 	}
-	return
+	defer chunkMsgPool.Put(msg)
+
+	connect, ok := msg.MsgData.(*CallMessage)
+
+	if ok {
+		if connect.CommandName != CommandConnect {
+			return nil
+		}
+		v := DecodeAMFObject(connect.Object)
+		if v == nil {
+			err = errors.Errorf("OnConnect Decode AMF Object Fail")
+
+			return
+		}
+		if appName, ok := v["app"]; ok {
+			nc.appName = appName.(string)
+		}
+
+		if objEncoding, ok := v["objectEncoding"]; ok {
+			nc.objectEncoding = objEncoding.(float64)
+		}
+
+		// 回复消息
+		_ = nc.SendMessage(SendAckWindowSizeMessage, uint32(512<<10))
+		_ = nc.SendMessage(SendSetPeerBandWidthMessage, uint32(512<<10))
+		_ = nc.SendMessage(SendStreamBeginMessage, nil)
+		_ = nc.SendMessage(SendConnectResponseMessage, nc.objectEncoding)
+		fmt.Println("OnConnect TryConnect Response is Done.")
+	}
+
+	return nil
 }
 
 func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 	switch msgType {
-
 	case SendAckWindowSizeMessage:
 		size, ok := args.(uint32)
 		if !ok {
 			return errors.New(SendAckWindowSizeMessage + ", The args must be a uint32")
 		}
+
 		return nc.writeMessage(RtmpMsgChunkSize, Uint32Message(size))
 	case SendSetPeerBandWidthMessage:
 		size, ok := args.(uint32)
 		if !ok {
 			return errors.New(SendSetPeerBandWidthMessage + ", The args must be a uint32")
 		}
+
 		return nc.writeMessage(RtmpMsgBandWidth, &SetPeerBandWidthMessage{
 			AcknowledgementWindowSize: size,
 			LimitType:                 byte(2),
@@ -160,6 +177,7 @@ func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 		m.TransactionID = 1
 		m.Properties = pro
 		m.Infomation = info
+
 		return nc.writeMessage(RtmpMsgAMF0Command, m)
 	}
 
@@ -167,7 +185,6 @@ func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 }
 
 func (nc *NetConnection) readChunk() (*Chunk, error) {
-
 	// 先读 BasicHeader
 	// 先读 先读BasicHeader中的 ChunkType
 
@@ -194,7 +211,10 @@ func (nc *NetConnection) readChunk() (*Chunk, error) {
 		nc.rtmpHeader[streamID] = fullHead
 	}
 
-	nc.buildChunkHeader(chunkType, fullHead)
+	err = nc.buildChunkHeader(chunkType, fullHead)
+	if err != nil {
+		return nil, err
+	}
 
 	currentBody, ok := nc.rtmpBody[streamID]
 
@@ -231,7 +251,6 @@ func (nc *NetConnection) readChunk() (*Chunk, error) {
 	// 这里一定要放到最后 若在前面的话 读取完 完整的包后，还会进行递归，那么就还去读数据
 	// 但是此时流中已经没有数据了就会阻塞
 	if readed == msgLen {
-
 		msg := chunkMsgPool.Get().(*Chunk)
 
 		msg.MsgData = nil
@@ -243,6 +262,7 @@ func (nc *NetConnection) readChunk() (*Chunk, error) {
 			return nil, err
 		}
 		delete(nc.rtmpBody, msg.ChunkStreamID)
+
 		return msg, nil
 	}
 
@@ -258,7 +278,6 @@ func (nc *NetConnection) readChunk() (*Chunk, error) {
 
 */
 func (nc *NetConnection) buildChunkHeader(chunkType byte, h *ChunkHeader) error {
-
 	switch chunkType {
 	case 0:
 		return nc.chunkType0(h)
@@ -268,13 +287,14 @@ func (nc *NetConnection) buildChunkHeader(chunkType byte, h *ChunkHeader) error 
 		return nc.chunkType2(h)
 	case 3:
 		h.ChunkType = chunkType
+
 		return nil
 	}
-	return fmt.Errorf("Not Support ChunkType type is %d", chunkType)
+
+	return errors.Errorf("Not Support ChunkType type is %d", chunkType)
 }
 
 func (nc *NetConnection) chunkType0(h *ChunkHeader) error {
-
 	// 前三个byte为 timestamp
 	b := mem_pool.GetSlice(3)
 	defer mem_pool.RecycleSlice(b)
@@ -345,7 +365,6 @@ func (nc *NetConnection) chunkType1(h *ChunkHeader) error {
 }
 
 func (nc *NetConnection) chunkType2(h *ChunkHeader) error {
-
 	b3 := mem_pool.GetSlice(3)
 	defer mem_pool.RecycleSlice(b3)
 	_, err := nc.readFull(b3)
@@ -373,6 +392,7 @@ func (nc *NetConnection) getExtendTimestamp(h *ChunkHeader) error {
 		}
 		h.ExtendTimestamp = binary.BigEndian.Uint32(b4)
 	}
+
 	return nil
 }
 
@@ -438,7 +458,7 @@ func (nc *NetConnection) writeMessage(t byte, en MessageEncode) error {
 		return err
 	}
 
-	for need != nil && len(need) > 0 {
+	for need != nil {
 		if need, err = nc.encodeChunk1(head, need, nc.writeChunkSize); err != nil {
 			return err
 		}
@@ -446,7 +466,6 @@ func (nc *NetConnection) writeMessage(t byte, en MessageEncode) error {
 		if err = nc.rw.Flush(); err != nil {
 			return err
 		}
-
 	}
 
 	return nil

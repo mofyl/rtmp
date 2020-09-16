@@ -59,7 +59,7 @@ type ChunkBasicHeader struct {
 type ChunkMessageHeader struct {
 	Timestamp       uint32 // 3byte
 	MessageLength   uint32 // 2byte
-	MessageTypeID   byte   //1 byte
+	MessageTypeID   byte   // 1 byte
 	MessageStreamID uint32 // 4byte
 }
 
@@ -69,23 +69,24 @@ type ChunkExtendedTimestamp struct {
 
 func (nc *NetConnection) beforEncodeChunk(payload []byte, size int) error {
 	if size > RtmpMaxChunkSize || payload == nil || len(payload) == 0 {
-		return errors.New("encodeChunk12 Error")
+		return errors.New("encodeChunk12 Error beforEncodeChunk")
 	}
 
 	return nil
 }
 
 func (nc *NetConnection) afterEncodeChunk(payload []byte, size int) ([]byte, error) {
-
 	if len(payload) > size {
 		n, err := nc.writeFull(payload[0:size])
 		if err != nil {
 			return nil, err
 		}
 		need := payload[n:]
+
 		return need, nil
 	}
 	nc.writeFull(payload)
+
 	return nil, nil
 }
 
@@ -102,7 +103,7 @@ func (nc *NetConnection) encodeChunk12(head *ChunkHeader, payload []byte, size i
 	utils.BigEndian.PutUint24(b[4:], head.ChunkMessageHeader.MessageLength)
 	b[7] = head.ChunkMessageHeader.MessageTypeID
 	// 这里写StreamID的时候一定要注意使用小端
-	binary.LittleEndian.PutUint32(b[8:], uint32(head.ChunkMessageHeader.MessageStreamID))
+	binary.LittleEndian.PutUint32(b[8:], head.ChunkMessageHeader.MessageStreamID)
 
 	nc.writeFull(b)
 	mem_pool.RecycleSlice(b)
@@ -121,7 +122,6 @@ func (nc *NetConnection) encodeChunk12(head *ChunkHeader, payload []byte, size i
 }
 
 func (nc *NetConnection) encodeChunk1(head *ChunkHeader, payload []byte, size int) ([]byte, error) {
-
 	if size > RtmpMaxChunkSize || payload == nil || len(payload) == 0 {
 		return nil, errors.New("enCode Chunk1 Error")
 	}

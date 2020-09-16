@@ -3,12 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
-	"fmt"
 	"rtmp/mem_pool"
+
+	"github.com/pkg/errors"
 )
 
 const (
-	// AMF0 编码中 自定义的类型
+	// AMF0 编码中 自定义的类型.
 	AMF0Number      = 0x00
 	AMF0Boolean     = 0x01
 	AMF0String      = 0x02
@@ -32,7 +33,7 @@ type AMFObject interface{}
 type AMFObjects map[string]AMFObject
 
 func newAMFObjects() AMFObjects {
-	return make(AMFObjects, 0)
+	return make(AMFObjects)
 }
 
 type AMF struct {
@@ -74,7 +75,6 @@ func (amf *AMF) readString() (string, error) {
 }
 
 func (amf *AMF) writeString(v string) error {
-
 	// 先将类型写进去
 	err := amf.WriteByte(byte(AMF0String))
 	if err != nil {
@@ -85,6 +85,7 @@ func (amf *AMF) writeString(v string) error {
 	if err = amf.writeSize16(uint16(len(vB))); err != nil {
 		return err
 	}
+
 	return binary.Write(amf, binary.BigEndian, vB)
 }
 
@@ -103,7 +104,6 @@ func (amf *AMF) readObjectKey() (string, error) {
 }
 
 func (amf *AMF) writeObjectKey(key string) error {
-
 	keyB := []byte(key)
 	if err := amf.writeSize16(uint16(len(keyB))); err != nil {
 		return err
@@ -122,6 +122,7 @@ func (amf *AMF) readSize16() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
 	return int(binary.BigEndian.Uint16(b)), nil
 }
 
@@ -131,6 +132,7 @@ func (amf *AMF) writeSize16(l uint16) error {
 
 	binary.BigEndian.PutUint16(b, l)
 	_, err := amf.Write(b)
+
 	return err
 }
 
@@ -138,13 +140,13 @@ func (amf *AMF) readSize32() (int, error) {
 	b, cancel, err := readBytes(amf.Buffer, 4)
 	defer cancel()
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
+
 	return int(binary.BigEndian.Uint32(b)), nil
 }
 
 func (amf *AMF) readBool() (bool, error) {
-
 	_, err := amf.ReadByte()
 	if err != nil {
 		return false, err
@@ -156,7 +158,6 @@ func (amf *AMF) readBool() (bool, error) {
 	}
 
 	return b == 1, nil
-
 }
 
 func (amf *AMF) writeBool(b bool) error {
@@ -164,10 +165,11 @@ func (amf *AMF) writeBool(b bool) error {
 	if err := amf.WriteByte(AMF0Boolean); err != nil {
 		return err
 	}
-	//写入值
+	// 写入值
 	if b {
 		return amf.WriteByte(byte(1))
 	}
+
 	return amf.WriteByte(byte(0))
 }
 
@@ -202,14 +204,12 @@ func (amf *AMF) readObject() (AMFObjects, error) {
 		if v != AMF0EndObject && k != "" {
 			m[k] = v
 		}
-
 	}
 }
 
 func (amf *AMF) decodeObject() (AMFObject, error) {
-
 	if amf.Len() == 0 {
-		return nil, fmt.Errorf("no enough bytes %d", amf.Len())
+		return nil, errors.Errorf("no enough bytes %d", amf.Len())
 	}
 
 	// 解析类型 第一个byte为类型
@@ -249,12 +249,10 @@ func (amf *AMF) decodeObject() (AMFObject, error) {
 		return amf.readLongString()
 	}
 
-	return nil, fmt.Errorf("Not Support Type , type is %d", t)
-
+	return nil, errors.Errorf("Not Support Type , type is %d", t)
 }
 
 func (amf *AMF) encodeObject(t AMFObjects) error {
-
 	// 写入类型名字
 	amf.WriteByte(AMF0Object)
 	// 最后写入结束
@@ -272,11 +270,11 @@ func (amf *AMF) encodeObject(t AMFObjects) error {
 			return amf.writeObjectBool(k, vv)
 		}
 	}
+
 	return nil
 }
 
 func (amf *AMF) writeObjectString(key, value string) error {
-
 	if err := amf.writeObjectKey(key); err != nil {
 		return err
 	}
@@ -285,32 +283,32 @@ func (amf *AMF) writeObjectString(key, value string) error {
 }
 
 func (amf *AMF) writeObjectNumer(key string, v float64) error {
-
 	if err := amf.writeObjectKey(key); err != nil {
 		return err
 	}
-	return amf.writeNumber(v)
 
+	return amf.writeNumber(v)
 }
 
 func (amf *AMF) writeObjectBool(key string, v bool) error {
-
 	if err := amf.writeObjectKey(key); err != nil {
 		return err
 	}
-	return amf.writeBool(v)
 
+	return amf.writeBool(v)
 }
 
-// longString
+// longString.
 func (amf *AMF) readLongString() (string, error) {
-
 	_, err := amf.ReadByte()
 	if err != nil {
 		return "", err
 	}
 
 	size, err := amf.readSize32()
+	if err != nil {
+		return "", err
+	}
 
 	b, cancel, err := readBytes(amf.Buffer, size)
 	defer cancel()
@@ -320,15 +318,13 @@ func (amf *AMF) readLongString() (string, error) {
 	}
 
 	return string(b), nil
-
 }
 
 // 第一个字节是 类型
 // 后面8个byte 是时间 就是一个uint64类型
-// 后面 2个byte是 date-marker
+// 后面 2个byte是 date-marker.
 func (amf *AMF) readDate() (uint64, error) {
 	_, err := amf.ReadByte()
-
 	if err != nil {
 		return 0, nil
 	}
@@ -341,39 +337,32 @@ func (amf *AMF) readDate() (uint64, error) {
 
 	t := binary.BigEndian.Uint64(b)
 
-	b, cancel2, err := readBytes(amf.Buffer, 2)
+	_, cancel2, err := readBytes(amf.Buffer, 2)
 	defer cancel2()
 
 	return t, err
-
 }
 
 func (amf *AMF) readEndObject() (AMFObject, error) {
-
 	_, err := amf.ReadByte()
 	if err != nil {
 		return nil, err
 	}
 
 	return AMF0EndObject, nil
-
 }
 
 // 这里的array也是一个map 只不过可以读出来 size
 // 第一个字节是类型
-// 后面4个Byte就是size
+// 后面4个Byte就是size.
 func (amf *AMF) readArray() (AMFObjects, error) {
-
 	m := newAMFObjects()
-
 	_, err := amf.ReadByte()
-
 	if err != nil {
 		return nil, err
 	}
 
 	size, err := amf.readSize32()
-
 	if err != nil {
 		return nil, err
 	}
@@ -382,27 +371,31 @@ func (amf *AMF) readArray() (AMFObjects, error) {
 			if v, err := amf.decodeObject(); err == nil {
 				if k != "" || v != AMF0EndObject {
 					m[k] = v
+
 					continue
 				}
 			}
 		}
+
 		return nil, err
 	}
+
 	return m, nil
 }
 
 func (amf *AMF) readUndefined() (AMFObject, error) {
 	_, err := amf.ReadByte()
+
 	return AMF0Undefined, err
 }
 
 func (amf *AMF) readNull() (AMFObject, error) {
 	_, err := amf.ReadByte()
+
 	return nil, err
 }
 
 func readBytes(buf *bytes.Buffer, length int) ([]byte, func(), error) {
-
 	b := mem_pool.GetSlice(length)
 	f := func() {
 		mem_pool.RecycleSlice(b)
@@ -413,16 +406,14 @@ func readBytes(buf *bytes.Buffer, length int) ([]byte, func(), error) {
 	}
 
 	if i != length {
-		return nil, f, fmt.Errorf("not enough bytes,%v/%v", buf.Len(), length)
+		return nil, f, errors.Errorf("not enough bytes,%v/%v", buf.Len(), length)
 	}
 
 	return b, f, nil
 }
 
 func (amf *AMF) readNumber() (float64, error) {
-
 	_, err := amf.ReadByte()
-
 	if err != nil {
 		return 0, err
 	}
@@ -433,19 +424,18 @@ func (amf *AMF) readNumber() (float64, error) {
 }
 
 func (amf *AMF) writeNumber(l float64) error {
-
 	// 写入类型
 	if err := amf.WriteByte(byte(AMF0Number)); err != nil {
 		return err
 	}
 
 	return binary.Write(amf, binary.BigEndian, l)
-
 }
 
 func DecodeAMFObject(obj interface{}) AMFObjects {
 	if v, ok := obj.(AMFObjects); ok {
 		return v
 	}
+
 	return nil
 }
