@@ -176,7 +176,6 @@ func (nc *NetConnection) onConnect() (err error) {
 
 		return
 	}
-
 	if err = nc.SendMessage(SendStreamBeginMessage, nil); err != nil {
 		fmt.Println("Send SendStreamBeginMessage ", err)
 
@@ -187,7 +186,6 @@ func (nc *NetConnection) onConnect() (err error) {
 
 		return
 	}
-	fmt.Println("OnConnect TryConnect Response is Done.")
 
 	return nil
 }
@@ -371,9 +369,6 @@ func (nc *NetConnection) readChunk() (*Chunk, error) {
 		needRead = unRead
 	}
 
-	// if n, err := io.ReadFull(nc.rw, currentBody[readed:needRead+readed]); err != nil {
-	// 	readed += n
-	// }
 	if n, err := nc.readFull(currentBody[readed : needRead+readed]); err != nil {
 		fmt.Println("nc ReadFull Err ", err.Error())
 	} else {
