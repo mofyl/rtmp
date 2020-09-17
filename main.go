@@ -10,7 +10,7 @@ import (
 func main() {
 	mem_pool.InitPool()
 
-	l, err := net.Listen("tcp4", "127.0.0.1:9000")
+	l, err := net.Listen("tcp", "127.0.0.1:1935")
 	if err != nil {
 		fmt.Println("listen err is ", err.Error())
 
@@ -24,6 +24,11 @@ func main() {
 
 			continue
 		}
+		if err = conn.(*net.TCPConn).SetNoDelay(false); err != nil {
+			fmt.Println("Set No Delay Fail")
+
+			continue
+		}
 		fmt.Println("Success")
 		// nc := bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 		nc := &NetConnection{
@@ -33,6 +38,7 @@ func main() {
 			readChunkSize:  RtmpDefaultChunkSize,
 			rtmpHeader:     make(map[uint32]*ChunkHeader),
 			rtmpBody:       make(map[uint32][]byte),
+			bandwith:       RtmpMaxChunkSize << 3,
 		}
 
 		go nc.HandlerMessage()

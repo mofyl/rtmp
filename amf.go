@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"rtmp/mem_pool"
+	"rtmp/utils"
 
 	"github.com/pkg/errors"
 )
@@ -27,6 +28,8 @@ const (
 	AMF0ReCordset   = 0x0e
 	AMF0Xml         = 0x0f
 )
+
+var endObj = []byte{0, 0, AMF0EndObject}
 
 type AMFObject interface{}
 
@@ -255,23 +258,38 @@ func (amf *AMF) decodeObject() (AMFObject, error) {
 func (amf *AMF) encodeObject(t AMFObjects) error {
 	// 写入类型名字
 	amf.WriteByte(AMF0Object)
-	// 最后写入结束
-	defer amf.WriteByte(AMF0EndObject)
 
 	// 将类型写入
 	for k, v := range t {
 		// 写一个key 写一个值
 		switch vv := v.(type) {
 		case string:
-			return amf.writeObjectString(k, vv)
+			if err := amf.writeObjectString(k, vv); err != nil {
+				return err
+			}
 		case float64, float32, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
-			return amf.writeObjectNumer(k, vv.(float64))
+			if err := amf.writeObjectNumer(k, utils.ToFloat64(vv)); err != nil {
+				return err
+			}
 		case bool:
-			return amf.writeObjectBool(k, vv)
+			if err := amf.writeObjectBool(k, vv); err != nil {
+				return err
+			}
 		}
 	}
 
+	// 最后写入结束
+	if err := amf.writeObjectEnd(); err != nil {
+		return err
+	}
+
 	return nil
+}
+
+func (amf *AMF) writeObjectEnd() error {
+	_, err := amf.Write(endObj)
+
+	return err
 }
 
 func (amf *AMF) writeObjectString(key, value string) error {
@@ -413,6 +431,7 @@ func readBytes(buf *bytes.Buffer, length int) ([]byte, func(), error) {
 }
 
 func (amf *AMF) readNumber() (float64, error) {
+	// 这里的err不能检查 因为ReadByte总是会读取8个byte
 	_, err := amf.ReadByte()
 	if err != nil {
 		return 0, err

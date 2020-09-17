@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	StmpHandShakVersion = 0x3 // 服务器默认支持 版本号为3的协议
+	RtmpHandShakVersion = 0x3 // 服务器默认支持 版本号为3的协议
 	HandshakDataLen     = 1536
 
 	C0C1Len = 1 + HandshakDataLen
@@ -65,7 +65,7 @@ func handshake(conn *bufio.ReadWriter) error {
 		return err
 	}
 
-	if c0c1[0] != StmpHandShakVersion {
+	if c0c1[0] != RtmpHandShakVersion {
 		fmt.Println("The Client Version is not support, client ver is ", c0c1[0])
 		return errors.New("The Client Version is not support ")
 	}
@@ -100,7 +100,7 @@ func simpleHandshake(conn *bufio.ReadWriter, c1 []byte) error {
 	s2 := c1
 	buf := &bytes.Buffer{}
 
-	buf.WriteByte(StmpHandShakVersion)
+	buf.WriteByte(RtmpHandShakVersion)
 	err := binary.Write(buf, binary.BigEndian, uint32(0))
 	if err != nil {
 		return err
@@ -164,7 +164,7 @@ func complexHandshake(conn *bufio.ReadWriter, c1 []byte) error {
 	}
 
 	totalBuf := &bytes.Buffer{}
-	totalBuf.WriteByte(StmpHandShakVersion)
+	totalBuf.WriteByte(RtmpHandShakVersion)
 	totalBuf.Write(s1)
 	totalBuf.Write(s2Random)
 	totalBuf.Write(s2Digest)

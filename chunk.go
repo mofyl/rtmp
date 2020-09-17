@@ -85,7 +85,9 @@ func (nc *NetConnection) afterEncodeChunk(payload []byte, size int) ([]byte, err
 
 		return need, nil
 	}
-	nc.writeFull(payload)
+	if n, err := nc.writeFull(payload); err != nil || n != len(payload) {
+		return nil, err
+	}
 
 	return nil, nil
 }
@@ -105,14 +107,18 @@ func (nc *NetConnection) encodeChunk12(head *ChunkHeader, payload []byte, size i
 	// 这里写StreamID的时候一定要注意使用小端
 	binary.LittleEndian.PutUint32(b[8:], head.ChunkMessageHeader.MessageStreamID)
 
-	nc.writeFull(b)
+	if n, err := nc.writeFull(b); err != nil || n != len(b) {
+		return nil, err
+	}
 	mem_pool.RecycleSlice(b)
 
 	// 查看是否需要写 ExtendTimestamp
 	if head.ChunkMessageHeader.Timestamp == 0xffffff {
 		b := mem_pool.GetSlice(4)
 		binary.LittleEndian.PutUint32(b, head.ChunkExtendedTimestamp.ExtendTimestamp)
-		nc.writeFull(b)
+		if n, err := nc.writeFull(b); err != nil || n != len(b) {
+			return nil, err
+		}
 		mem_pool.RecycleSlice(b)
 	}
 

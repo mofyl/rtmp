@@ -9,7 +9,6 @@ import (
 	"net"
 	"rtmp/mem_pool"
 	"rtmp/utils"
-	"sync/atomic"
 
 	"github.com/pkg/errors"
 )
@@ -20,11 +19,12 @@ const (
 	SendStreamBeginMessage      = "Send Stream Begin Message"
 	SendConnectResponseMessage  = "Send Connect Response Message"
 	SendPingResponseMessage     = "Send Ping Response Message"
+	SendPingRequestMessage      = "Send Ping Request Message"
 	SendAckMessage              = "Send Ack Message"
 )
 
 const (
-	EngineVersion = "M/1.0"
+	EngineVersion = "mou/"
 )
 
 type NetConnection struct {
@@ -32,9 +32,7 @@ type NetConnection struct {
 	rw             *bufio.ReadWriter
 	writeChunkSize int
 	readChunkSize  int
-
-	streamID uint32
-
+	streamID       uint32
 	// rtmp 传输的头部可能是不完全的，但是第一个一定是完整的 这个完整的我们需要记录下来
 	// 然后后面再来相同ChunkID的头部，我们直接修改这个完整的就好了
 	rtmpHeader map[uint32]*ChunkHeader
@@ -50,11 +48,13 @@ type NetConnection struct {
 }
 
 func (nc *NetConnection) addReadSeqNum(n int) {
-	atomic.AddUint32(&nc.readSeqNum, uint32(n))
+	// atomic.AddUint32(&nc.readSeqNum, uint32(n))
+	nc.readSeqNum += uint32(n)
 }
 
 func (nc *NetConnection) addWriteSeqNum(n int) {
-	atomic.AddUint32(&nc.writeSeqNum, uint32(n))
+	// atomic.AddUint32(&nc.writeSeqNum, uint32(n))
+	nc.writeSeqNum += uint32(n)
 }
 
 func (nc *NetConnection) readByte() (b byte, err error) {
@@ -101,7 +101,6 @@ func (nc *NetConnection) HandlerMessage() {
 
 	for {
 		msg, err := nc.getMsg()
-
 		if err != nil {
 			fmt.Println("HandlerMessage Error is ", err.Error())
 
@@ -110,6 +109,25 @@ func (nc *NetConnection) HandlerMessage() {
 
 		if msg.MessageLength == 0 {
 			continue
+		}
+
+		switch msg.MessageTypeID {
+		case RtmpMsgAMF0Command:
+			if msg.MsgData == nil {
+				break
+			}
+
+			commander, ok := msg.MsgData.(GetCommander)
+			if !ok {
+				fmt.Println("interface{} is not CommandMessage")
+
+				continue
+			}
+			cmd := commander.GetCommand()
+			switch cmd.CommandName {
+			case "createStream":
+				fmt.Println("qweqwew")
+			}
 		}
 	}
 
@@ -124,51 +142,73 @@ func (nc *NetConnection) onConnect() (err error) {
 	defer chunkMsgPool.Put(msg)
 
 	connect, ok := msg.MsgData.(*CallMessage)
-
-	if ok {
-		if connect.CommandName != CommandConnect {
-			return nil
-		}
-		v := DecodeAMFObject(connect.Object)
-		if v == nil {
-			err = errors.Errorf("OnConnect Decode AMF Object Fail")
-
-			return
-		}
-		if appName, ok := v["app"]; ok {
-			nc.appName = appName.(string)
-		}
-
-		if objEncoding, ok := v["objectEncoding"]; ok {
-			nc.objectEncoding = objEncoding.(float64)
-		}
-
-		// 回复消息
-		_ = nc.SendMessage(SendAckWindowSizeMessage, uint32(512<<10))
-		_ = nc.SendMessage(SendSetPeerBandWidthMessage, uint32(512<<10))
-		_ = nc.SendMessage(SendStreamBeginMessage, nil)
-		_ = nc.SendMessage(SendConnectResponseMessage, nc.objectEncoding)
-		fmt.Println("OnConnect TryConnect Response is Done.")
+	if !ok {
+		return errors.New("on Connect Msg Data Must be CallMessage")
 	}
+
+	if connect.CommandName != CommandConnect {
+		return nil
+	}
+
+	v := DecodeAMFObject(connect.Object)
+	if v == nil {
+		err = errors.Errorf("OnConnect Decode AMF Object Fail")
+
+		return
+	}
+
+	if appName, ok := v["app"]; ok {
+		nc.appName = appName.(string)
+	}
+
+	if objEncoding, ok := v["objectEncoding"]; ok {
+		nc.objectEncoding = objEncoding.(float64)
+	}
+
+	// 回复消息
+	if err = nc.SendMessage(SendAckWindowSizeMessage, uint32(512<<10)); err != nil {
+		fmt.Println("Send SendAckWindowSizeMessage ", err)
+
+		return
+	}
+	if err = nc.SendMessage(SendSetPeerBandWidthMessage, uint32(512<<10)); err != nil {
+		fmt.Println("Send SendSetPeerBandWidthMessage ", err)
+
+		return
+	}
+
+	if err = nc.SendMessage(SendStreamBeginMessage, nil); err != nil {
+		fmt.Println("Send SendStreamBeginMessage ", err)
+
+		return
+	}
+	if err = nc.SendMessage(SendConnectResponseMessage, nc.objectEncoding); err != nil {
+		fmt.Println("Send SendConnectResponseMessage  ", err)
+
+		return
+	}
+	fmt.Println("OnConnect TryConnect Response is Done.")
 
 	return nil
 }
 
 func (nc *NetConnection) getMsg() (*Chunk, error) {
 	if nc.readSeqNum >= nc.bandwith {
-		atomic.AddUint32(&nc.totalRead, nc.readSeqNum)
-		atomic.StoreUint32(&nc.readSeqNum, 0)
+		// atomic.AddUint32(&nc.totalRead, nc.readSeqNum)
+		// atomic.StoreUint32(&nc.readSeqNum, 0)
+		nc.totalRead += nc.readSeqNum
+		nc.readSeqNum = 0
 		_ = nc.SendMessage(SendAckMessage, nc.totalRead)
 	}
 
 	msg, err := nc.readChunk()
-
 	if err != nil {
 		return nil, err
 	}
-	fmt.Println("readSeqNum is ", atomic.LoadUint32(&nc.readSeqNum))
-	fmt.Println("bandwith is ", nc.bandwith)
-	fmt.Println("bandwith is ", nc.bandwith)
+
+	// fmt.Println("readSeqNum is ", nc.readSeqNum)
+	// fmt.Println("bandwith is ", nc.bandwith)
+	// fmt.Println("bandwith is ", nc.bandwith)
 	fmt.Println("cur msg id is ", msg.MessageTypeID)
 	// 这里表示是用户控制消息
 	// 消息ID在 1~8
@@ -177,6 +217,7 @@ func (nc *NetConnection) getMsg() (*Chunk, error) {
 		case RtmpMsgChunkSize:
 			m := msg.MsgData.(uint32)
 			nc.readChunkSize = int(m)
+			fmt.Println("MsgChunkSize V is ", m)
 
 			return nc.getMsg()
 		case RtmpMsgAbort:
@@ -210,6 +251,8 @@ func (nc *NetConnection) getMsg() (*Chunk, error) {
 }
 
 func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
+	fmt.Println("Send Message MsgType is ", msgType)
+
 	switch msgType {
 	case SendAckWindowSizeMessage:
 		size, ok := args.(uint32)
@@ -217,7 +260,7 @@ func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 			return errors.New(SendAckWindowSizeMessage + ", The args must be a uint32")
 		}
 
-		return nc.writeMessage(RtmpMsgChunkSize, Uint32Message(size))
+		return nc.writeMessage(RtmpMsgAckSize, Uint32Message(size))
 	case SendSetPeerBandWidthMessage:
 		size, ok := args.(uint32)
 		if !ok {
@@ -229,7 +272,7 @@ func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 			LimitType:                 byte(2),
 		})
 	case SendStreamBeginMessage:
-		if args == nil {
+		if args != nil {
 			return errors.New(SendStreamBeginMessage + ", The paramter is nil")
 		}
 		// 其实这里还没有streamID 后面客户端回复 建立连接的时候会把streamID带过来
@@ -249,9 +292,11 @@ func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 		pro["capabilities"] = 31
 		pro["mode"] = 1
 		pro["Author"] = "dexter"
+
 		info["level"] = LevelStatus
 		info["code"] = NetConnectionConnectSuccess
 		info["objectEncoding"] = args.(float64)
+
 		m := new(ResponseConnectMessage)
 		m.CommandName = ResponseResult
 		m.TransactionID = 1
@@ -265,6 +310,12 @@ func (nc *NetConnection) SendMessage(msgType string, args interface{}) error {
 		}
 
 		return nc.writeMessage(RtmpMsgUserControl, &UserControlMessage{EventType: RtmpUserPingResponse})
+	case SendPingRequestMessage:
+		if args != nil {
+			return errors.New(SendPingRequestMessage + " the paramter is nil")
+		}
+
+		return nc.writeMessage(RtmpMsgUserControl, &PingRequestMessage{UserControlMessage{EventType: RtmpUserPingRequest}, 0})
 	}
 
 	return errors.New("SendMessage Not Support Type is " + msgType)
@@ -275,7 +326,6 @@ func (nc *NetConnection) readChunk() (*Chunk, error) {
 	// 先读 先读BasicHeader中的 ChunkType
 
 	basicHeader, err := nc.readByte()
-
 	if err != nil {
 		return nil, err
 	}
@@ -434,6 +484,7 @@ func (nc *NetConnection) chunkType1(h *ChunkHeader) error {
 	if err != nil {
 		return err
 	}
+	h.MessageLength = utils.BigEndian.Uint24(b3)
 
 	b1, err := nc.readByte()
 	if err != nil {
@@ -454,7 +505,6 @@ func (nc *NetConnection) chunkType2(h *ChunkHeader) error {
 	b3 := mem_pool.GetSlice(3)
 	defer mem_pool.RecycleSlice(b3)
 	_, err := nc.readFull(b3)
-
 	if err != nil {
 		return err
 	}
@@ -506,7 +556,7 @@ func (nc *NetConnection) getChunkStreamID(csid uint32) (uint32, error) {
 			return chunkStreamID, err
 		}
 
-		//chunkStreamID = uint32(b1) + 64 + uint32(b2) * 256
+		// chunkStreamID = uint32(b1) + 64 + uint32(b2) * 256
 		chunkStreamID = uint32(b1) + 64 + (uint32(b2) << 8)
 	}
 
@@ -523,11 +573,21 @@ func (nc *NetConnection) getChunkStreamID(csid uint32) (uint32, error) {
 func (nc *NetConnection) writeMessage(t byte, en MessageEncode) error {
 	body := en.Encode()
 	head := newChunkHeaderFromMessageType(t)
-
 	head.MessageLength = uint32(len(body))
 
 	if sid, ok := en.(HaveStreamID); ok {
 		head.MessageStreamID = sid.GetStreamID()
+	}
+
+	if nc.writeSeqNum > nc.bandwith {
+		nc.totalWrite += nc.writeSeqNum
+		nc.writeSeqNum = 0
+		if err := nc.SendMessage(SendAckMessage, nc.totalWrite); err != nil {
+			return err
+		}
+		if err := nc.SendMessage(SendPingRequestMessage, nil); err != nil {
+			return err
+		}
 	}
 
 	// 这里根据ChunkType的不同 也会有不同大小的ChunkHead
@@ -535,7 +595,6 @@ func (nc *NetConnection) writeMessage(t byte, en MessageEncode) error {
 	// 开始我们先使用12byte 的全量包发，若发不完就需要分包，这时就需要使用 1byte的ChunkHeader发送直到发完
 	// 因为我们的ChunkHeader和上一个包都相同，所以使用的就是1byte的Header包
 	need, err := nc.encodeChunk12(head, body, nc.writeChunkSize)
-
 	if err != nil {
 		return err
 	}

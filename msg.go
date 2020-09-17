@@ -149,6 +149,20 @@ type PingRequestMessage struct {
 	Timestamp uint32
 }
 
+func (msg *PingRequestMessage) Encode() []byte {
+	b := make([]byte, 6)
+
+	binary.BigEndian.PutUint16(b, msg.EventType)
+	binary.BigEndian.PutUint32(b[2:], msg.Timestamp)
+	msg.EventData = b[2:]
+
+	return b
+}
+
+type GetCommander interface {
+	GetCommand() CommandMessage
+}
+
 type CommandMessage struct {
 	CommandName   string
 	TransactionID uint64
@@ -160,9 +174,17 @@ type CallMessage struct {
 	Optional interface{} // 这里是一个Object
 }
 
+func (c *CallMessage) GetCommand() CommandMessage {
+	return c.CommandMessage
+}
+
 type CreateStreamMessage struct {
 	CommandMessage
 	cmdMsg AMFObject
+}
+
+func (c *CreateStreamMessage) GetCommand() CommandMessage {
+	return c.CommandMessage
 }
 
 type PlayMessage struct {
@@ -171,6 +193,19 @@ type PlayMessage struct {
 	Start      uint64
 	Duration   uint64
 	Reset      bool
+}
+
+func (p *PlayMessage) GetCommand() CommandMessage {
+	return p.CommandMessage
+}
+
+type CURDStreamMessage struct {
+	CommandMessage
+	StreamID uint32
+}
+
+func (c *CURDStreamMessage) GetCommand() CommandMessage {
+	return c.CommandMessage
 }
 
 type Uint32Message uint32
@@ -286,7 +321,6 @@ func decodeCommandAMF0(chunk *Chunk) (interface{}, error) {
 	amf := NewAMF(chunk.Body)
 
 	cmdName, err := amf.readString()
-
 	if err != nil {
 		return nil, err
 	}
@@ -300,10 +334,10 @@ func decodeCommandAMF0(chunk *Chunk) (interface{}, error) {
 		TransactionID: uint64(transactionID),
 	}
 
-	return handlerCommand(cmdMsg, amf, chunk)
+	return handlerCommand(cmdMsg, amf)
 }
 
-func handlerCommand(cmd CommandMessage, amf *AMF, chunk *Chunk) (interface{}, error) {
+func handlerCommand(cmd CommandMessage, amf *AMF) (interface{}, error) {
 	switch cmd.CommandName {
 	case CommandConnect, CommandCall:
 		pro, err := amf.readObject()
@@ -334,6 +368,15 @@ func handlerCommand(cmd CommandMessage, amf *AMF, chunk *Chunk) (interface{}, er
 		}
 
 		return msgData, nil
+	case CommandReleaseStream, CommandDeleteStream, CommandCloseStream:
+		_, _ = amf.readNull()
+
+		n, _ := amf.readNumber()
+
+		return &CURDStreamMessage{
+			CommandMessage: cmd,
+			StreamID:       uint32(n),
+		}, nil
 	case CommandPlay:
 		_, _ = amf.readNull()
 		msgData := &PlayMessage{
@@ -365,6 +408,8 @@ func handlerCommand(cmd CommandMessage, amf *AMF, chunk *Chunk) (interface{}, er
 		}
 
 		return msgData, nil
+	case "FCPublish", "FCUnpublish":
+		return nil, nil
 	}
 
 	return nil, errors.Errorf("not Support CommandName name is %s", cmd.CommandName)
@@ -406,5 +451,4 @@ func handlerUserControlMessage(controlMsg UserControlMessage) interface{} {
 	default:
 		return &controlMsg
 	}
-
 }
